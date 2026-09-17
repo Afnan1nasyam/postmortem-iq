@@ -1,0 +1,107 @@
+[
+  {
+    "query": "Have we seen Redis memory issues before?",
+    "expected_intent": "SIMILARITY",
+    "expected_services": ["cache-service"],
+    "expected_incident_keywords": ["Redis"],
+    "difficulty": "easy"
+  },
+  {
+    "query": "How did we fix the database connection pool exhaustion?",
+    "expected_intent": "RESOLUTION",
+    "expected_services": ["database"],
+    "expected_incident_keywords": ["connection pool"],
+    "difficulty": "easy"
+  },
+  {
+    "query": "Tell me about the certificate expiry incident",
+    "expected_intent": "SIMILARITY",
+    "expected_services": [],
+    "expected_incident_keywords": ["Certificate"],
+    "difficulty": "easy"
+  },
+  {
+    "query": "What was the Kafka consumer lag incident about?",
+    "expected_intent": "SIMILARITY",
+    "expected_services": [],
+    "expected_incident_keywords": ["Kafka"],
+    "difficulty": "easy"
+  },
+  {
+    "query": "How was the memory leak in notification service resolved?",
+    "expected_intent": "RESOLUTION",
+    "expected_services": ["notification-service"],
+    "expected_incident_keywords": ["Memory leak"],
+    "difficulty": "easy"
+  },
+  {
+    "query": "What happens if payment-service goes down?",
+    "expected_intent": "BLAST_RADIUS",
+    "expected_services": ["payment-service"],
+    "expected_incident_keywords": [],
+    "difficulty": "medium"
+  },
+  {
+    "query": "Which services are most affected by database issues?",
+    "expected_intent": "BLAST_RADIUS",
+    "expected_services": ["database"],
+    "expected_incident_keywords": [],
+    "difficulty": "medium"
+  },
+  {
+    "query": "What incidents involved the api-gateway?",
+    "expected_intent": "SIMILARITY",
+    "expected_services": ["api-gateway"],
+    "expected_incident_keywords": [],
+    "difficulty": "medium"
+  },
+  {
+    "query": "Show me all incidents related to checkout-service",
+    "expected_intent": "SIMILARITY",
+    "expected_services": ["checkout-service"],
+    "expected_incident_keywords": [],
+    "difficulty": "medium"
+  },
+  {
+    "query": "What's the blast radius if Redis fails?",
+    "expected_intent": "BLAST_RADIUS",
+    "expected_services": ["cache-service"],
+    "expected_incident_keywords": [],
+    "difficulty": "medium"
+  },
+  {
+    "query": "What is our most common root cause category?",
+    "expected_intent": "PATTERN",
+    "expected_services": [],
+    "expected_incident_keywords": [],
+    "difficulty": "hard"
+  },
+  {
+    "query": "What recurring patterns do we see in production incidents?",
+    "expected_intent": "PATTERN",
+    "expected_services": [],
+    "expected_incident_keywords": [],
+    "difficulty": "hard"
+  },
+  {
+    "query": "Which services are single points of failure?",
+    "expected_intent": "PATTERN",
+    "expected_services": [],
+    "expected_incident_keywords": [],
+    "difficulty": "hard"
+  },
+  {
+    "query": "Are there common themes between our critical incidents?",
+    "expected_intent": "PATTERN",
+    "expected_services": [],
+    "expected_incident_keywords": [],
+    "difficulty": "hard"
+  },
+  {
+    "query": "What should we prioritize fixing to prevent future incidents?",
+    "expected_intent": "PATTERN",
+    "expected_services": [],
+    "expected_incident_keywords": [],
+    "difficulty": "hard"
+  }
+]

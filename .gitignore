@@ -1,0 +1,30 @@
+# Environment
+.env
+.venv/
+venv/
+
+# Data stores (regenerable)
+data/chroma/
+data/knowledge_graph.json
+data/postmortem.db
+data/processed/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Streamlit
+.streamlit/secrets.toml
