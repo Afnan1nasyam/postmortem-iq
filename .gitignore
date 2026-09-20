@@ -28,3 +28,6 @@ Thumbs.db
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Evaluation outputs
+eval/*_results.json

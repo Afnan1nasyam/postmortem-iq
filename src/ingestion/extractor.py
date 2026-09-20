@@ -6,65 +6,63 @@ from pydantic import ValidationError
 from src.models.schemas import IncidentExtraction, PostmortemDocument
 from src.utils.llm_client import GroqClient
 
-# EXTRACTION_PROMPT_V1
+# EXTRACTION_PROMPT_V2
 EXTRACTION_SYSTEM_PROMPT = """\
-You are an expert incident analysis engine. Given an engineering postmortem document, \
-extract structured information into the exact JSON schema below.
+You are an expert incident analysis engine.
 
-FIELDS:
-- "title": Short descriptive title of the incident.
-- "date": Date the incident occurred in "YYYY-MM-DD" format. Use null if not found.
-- "severity": One of "critical", "major", "minor", "unknown". Infer from impact scope \
-  and duration if not stated explicitly.
-- "duration": Human-readable duration string (e.g. "4 hours 23 minutes"). null if unknown.
-- "summary": 2-3 sentence summary of what happened, the impact, and how it was resolved.
-- "trigger_event": The specific event that initiated the incident (e.g. a deploy, config \
-  change, traffic spike).
-- "root_cause": Object with:
-    - "description": Detailed explanation of the underlying root cause.
-    - "category": One of "config_change", "capacity", "dependency_failure", "bug", \
-      "human_error", "infrastructure", "unknown".
-- "affected_services": List of objects, each with:
-    - "name": Service or component name.
-    - "role": "primary" (directly failed) or "secondary" (impacted downstream).
-    - "impact": Brief description of how this service was affected.
-- "failure_chain": Ordered list of strings describing the causal chain step by step, \
-  from trigger to final impact. Each step should start with "Step N: ". Extract at least \
-  2 steps. This is critical for building the knowledge graph.
-- "resolution": Object with:
-    - "description": What action resolved the incident.
-    - "type": One of "rollback", "hotfix", "scaling", "config_change", "failover", "manual".
-    - "time_to_resolve": Duration string or null.
-- "preventive_actions": List of follow-up action items mentioned in the postmortem.
-- "service_dependencies": List of dependency relationships inferred from the postmortem. \
-  Each with:
-    - "from_service": The dependent service name.
-    - "to_service": The service it depends on.
-    - "type": "hard" (will fail without it) or "soft" (degraded but functional).
-  Infer dependencies from the failure chain and affected services even if not explicitly \
-  stated. For example, if Service A timed out waiting for Service B, that is a hard \
-  dependency from A to B.
+Given an engineering postmortem document, extract structured information
+into the exact JSON schema supplied by the API.
 
-REQUIRED JSON SCHEMA:
-{
-  "title": "string",
-  "date": "string or null",
-  "severity": "critical | major | minor | unknown",
-  "duration": "string or null",
-  "summary": "string",
-  "trigger_event": "string",
-  "root_cause": {"description": "string", "category": "string"},
-  "affected_services": [{"name": "string", "role": "primary | secondary", "impact": "string"}],
-  "failure_chain": ["string"],
-  "resolution": {"description": "string", "type": "string", "time_to_resolve": "string or null"},
-  "preventive_actions": ["string"],
-  "service_dependencies": [{"from_service": "string", "to_service": "string", "type": "hard | soft"}]
-}
+EXTRACTION RULES:
 
-RULES:
-- Use "unknown" or null for any field you cannot determine from the text.
-- Do NOT invent information. Only extract what is stated or can be directly inferred.
-- Return ONLY valid JSON matching the schema. No markdown, no explanation."""
+- Extract only information supported by the postmortem.
+- Do not invent incidents, services, dependencies, metrics, dates, or actions.
+- "title" must identify the actual incident described by the document.
+- "date" must use YYYY-MM-DD when present.
+- "severity" must be one of: critical, major, minor, unknown.
+- "duration" should preserve the duration stated by the document.
+- "summary" should describe what happened, impact, and resolution.
+- "trigger_event" should identify the event that initiated the incident.
+- "root_cause.description" must describe the underlying cause, not merely a symptom.
+- "root_cause.category" must use one of the allowed categories.
+- "affected_services" must contain services or components actually described
+  as affected by the incident.
+- Use role="primary" for services directly failing or directly affected.
+- Use role="secondary" for services impacted downstream.
+- "failure_chain" must preserve the causal sequence from trigger to impact.
+- Each failure-chain step must begin with "Step N: ".
+- Extract at least two failure-chain steps whenever the document supports them.
+- "resolution" must describe the actions that restored service.
+- "preventive_actions" must contain the documented follow-up actions.
+
+- "service_dependencies" must represent actual service-to-service dependencies.
+- Write each dependency as:
+      from_service = the dependent service
+      to_service   = the service it depends on.
+- Use type="hard" when the dependent service cannot function without the target.
+- Use type="soft" when the dependent service can continue functioning but is degraded.
+- Create a dependency only when the document provides evidence that one service:
+  * calls another service,
+  * routes requests to another service,
+  * waits on another service,
+  * reads from or writes through another service,
+  * or cannot perform its function without another service.
+- Do NOT infer a service-to-service dependency merely because:
+  * two services were affected by the same incident,
+  * two services appear in the affected-services list,
+  * both depend on the same infrastructure,
+  * both use the same service-mesh or certificate infrastructure,
+  * or one shared infrastructure failure affected them simultaneously.
+- Shared infrastructure such as certificates, Redis, Kafka, DNS, databases,
+  or a service mesh is not automatically a service-to-service dependency.
+- When the evidence is insufficient, return an empty service_dependencies list.
+
+- Do not generate an incident_id.
+- The application will generate the incident_id automatically.
+
+- When a field cannot be determined, use null, an empty list, or "unknown"
+  according to the schema.
+"""
 
 
 class PostmortemExtractor:
@@ -73,24 +71,74 @@ class PostmortemExtractor:
     def __init__(self):
         self.client = GroqClient()
 
-    def extract(self, document: PostmortemDocument) -> IncidentExtraction:
+    @staticmethod
+    def _get_llm_schema() -> dict:
+        """
+        Build the schema sent to Groq.
+
+        incident_id is intentionally removed because it is generated by the
+        IncidentExtraction Pydantic model, not extracted from the document.
+        """
+        schema = IncidentExtraction.model_json_schema()
+
+        schema.get("properties", {}).pop("incident_id", None)
+
+        if "required" in schema:
+            schema["required"] = [
+                field
+                for field in schema["required"]
+                if field != "incident_id"
+            ]
+
+        return schema
+
+    def extract(
+        self,
+        document: PostmortemDocument,
+    ) -> IncidentExtraction:
         """Extract structured data from a single postmortem document."""
         user_prompt = (
-            "Extract structured incident data from the following postmortem:\n\n"
-            + document.raw_text
+            "Extract structured incident data from the following postmortem.\n\n"
+            "POSTMORTEM DOCUMENT:\n"
+            "===================\n"
+            f"{document.raw_text}\n"
+            "===================\n"
         )
 
         try:
+            schema = self._get_llm_schema()
+
             data = self.client.generate_json(
                 prompt=user_prompt,
                 system_prompt=EXTRACTION_SYSTEM_PROMPT,
+                temperature=0.0,
+                max_tokens=4096,
+                schema=schema,
+                schema_name="incident_extraction",
             )
+
             return IncidentExtraction.model_validate(data)
+
         except ValidationError as exc:
-            logger.warning("Validation failed for {}: {}", document.file_path, exc)
-            return self._retry_with_repair(document, user_prompt, exc)
+            logger.warning(
+                "Validation failed for {}: {}",
+                document.file_path,
+                exc,
+            )
+
+            return self._retry_with_repair(
+                document,
+                user_prompt,
+                exc,
+            )
+
         except Exception as exc:
-            logger.error("Extraction failed for {}: {}", document.file_path, exc)
+            logger.error(
+                "Extraction failed for {}: {}",
+                document.file_path,
+                exc,
+            )
+
             return self._make_failed_extraction(document)
 
     def _retry_with_repair(
@@ -99,48 +147,95 @@ class PostmortemExtractor:
         original_prompt: str,
         error: ValidationError,
     ) -> IncidentExtraction:
-        """Attempt one repair pass including the validation error details."""
+        """
+        Attempt one additional structured extraction with validation details.
+
+        This is primarily a defensive fallback. Strict Structured Outputs should
+        substantially reduce schema-validation failures.
+        """
         repair_prompt = (
             f"{original_prompt}\n\n"
-            f"The previous extraction had validation errors:\n{error}\n\n"
-            "Please fix the JSON to match the required schema exactly."
+            "A previous extraction attempt failed local Pydantic validation.\n"
+            "Validation details:\n"
+            f"{error}\n\n"
+            "Re-examine the postmortem and return the complete incident "
+            "extraction again. Do not omit required fields."
         )
+
         try:
+            schema = self._get_llm_schema()
+
             data = self.client.generate_json(
                 prompt=repair_prompt,
                 system_prompt=EXTRACTION_SYSTEM_PROMPT,
+                temperature=0.0,
+                max_tokens=4096,
+                schema=schema,
+                schema_name="incident_extraction",
             )
+
             return IncidentExtraction.model_validate(data)
+
         except Exception as exc:
-            logger.error("Repair extraction also failed for {}: {}", document.file_path, exc)
+            logger.error(
+                "Repair extraction also failed for {}: {}",
+                document.file_path,
+                exc,
+            )
+
             return self._make_failed_extraction(document)
 
-    def _make_failed_extraction(self, document: PostmortemDocument) -> IncidentExtraction:
+    def _make_failed_extraction(
+        self,
+        document: PostmortemDocument,
+    ) -> IncidentExtraction:
         """Return a minimal placeholder when extraction completely fails."""
         return IncidentExtraction(
             title="EXTRACTION_FAILED",
             severity="unknown",
             summary=f"Extraction failed for {document.file_path}",
             trigger_event="unknown",
-            root_cause={"description": "unknown", "category": "unknown"},
+            root_cause={
+                "description": "unknown",
+                "category": "unknown",
+            },
             affected_services=[],
             failure_chain=[],
-            resolution={"description": "unknown", "type": "manual"},
+            resolution={
+                "description": "unknown",
+                "type": "manual",
+            },
             preventive_actions=[],
+            service_dependencies=[],
         )
 
     def extract_batch(
-        self, documents: list[PostmortemDocument]
+        self,
+        documents: list[PostmortemDocument],
     ) -> list[IncidentExtraction]:
         """Extract from multiple documents, logging progress and never crashing on one failure."""
         total = len(documents)
         results: list[IncidentExtraction] = []
 
         for i, doc in enumerate(documents, 1):
-            logger.info("Extracting {}/{}: {}", i, total, doc.file_path)
+            logger.info(
+                "Extracting {}/{}: {}",
+                i,
+                total,
+                doc.file_path,
+            )
+
             result = self.extract(doc)
             results.append(result)
 
-        logger.info("Batch extraction complete: {}/{} succeeded",
-                     sum(1 for r in results if r.title != "EXTRACTION_FAILED"), total)
+        logger.info(
+            "Batch extraction complete: {}/{} succeeded",
+            sum(
+                1
+                for r in results
+                if r.title != "EXTRACTION_FAILED"
+            ),
+            total,
+        )
+
         return results

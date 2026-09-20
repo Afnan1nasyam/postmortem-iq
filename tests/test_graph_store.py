@@ -1,6 +1,5 @@
 """Tests for the NetworkX knowledge graph store."""
 
-from pathlib import Path
 
 import pytest
 
@@ -54,18 +53,38 @@ def test_blast_radius():
     g = KnowledgeGraph()
 
     ext1 = _make_extraction(
-        "inc-1", "Outage 1", ["api-gateway", "user-service"],
-        deps=[ServiceDependency(from_service="api-gateway", to_service="user-service", type="hard")],
+        "inc-1",
+        "Outage 1",
+        ["api-gateway", "user-service"],
+        deps=[
+            ServiceDependency(
+                from_service="api-gateway",
+                to_service="user-service",
+                type="hard",
+            )
+        ],
     )
+
     ext2 = _make_extraction(
-        "inc-2", "Outage 2", ["user-service", "notification-service"],
-        deps=[ServiceDependency(from_service="user-service", to_service="notification-service", type="soft")],
+        "inc-2",
+        "Outage 2",
+        ["user-service", "notification-service"],
+        deps=[
+            ServiceDependency(
+                from_service="user-service",
+                to_service="notification-service",
+                type="soft",
+            )
+        ],
     )
+
     g.add_incident(ext1)
     g.add_incident(ext2)
 
-    blast = g.get_blast_radius("api-gateway")
-    assert "user-service" in blast or "notification-service" in blast
+    blast = g.get_blast_radius("notification-service")
+
+    assert "user-service" in blast
+    assert "api-gateway" in blast
 
 
 def test_save_load_roundtrip(tmp_data_dir):
@@ -100,3 +119,24 @@ def test_get_stats():
     assert "node_types" in stats
     assert "edge_types" in stats
     assert "top_services" in stats
+
+def test_service_alias_canonicalization():
+    g = KnowledgeGraph()
+
+    ext = _make_extraction(
+        "inc-redis",
+        "Redis Alias Test",
+        ["cache-service (redis)"],
+    )
+
+    g.add_incident(ext)
+
+    # The raw name should be normalized to the canonical graph identity.
+    services = g.get_all_services()
+    assert services.count("cache-service") == 1
+    assert "cache-service (redis)" not in services
+
+    # All supported aliases should resolve to the same incident.
+    assert g.get_incidents_for_service("cache-service") == ["inc-redis"]
+    assert g.get_incidents_for_service("redis") == ["inc-redis"]
+    assert g.get_incidents_for_service("cache-service (redis)") == ["inc-redis"]

@@ -15,14 +15,38 @@ def _norm(name: str) -> str:
     return name.strip().lower()
 
 
+def _norm_service(name: str) -> str:
+    """Normalize service names to canonical graph identities."""
+    value = _norm(name)
+
+    aliases = {
+        "redis": "cache-service",
+        "cache": "cache-service",
+        "cache-service (redis)": "cache-service",
+        "database": "database (postgres)",
+        "notification service": "notification-service",
+        "api gateway": "api-gateway",
+        "payment service": "payment-service",
+        "checkout service": "checkout-service",
+        "order service": "order-service",
+    }
+
+    return aliases.get(value, value)
+
+
 class KnowledgeGraph:
     """Directed knowledge graph of incidents, services, root causes, and resolutions."""
 
     def __init__(self):
         self._path = Path(settings.GRAPH_PATH)
-        self._graph: nx.DiGraph = self.load() if self._path.exists() else nx.DiGraph()
-        logger.info("KnowledgeGraph ready ({} nodes, {} edges)",
-                     self._graph.number_of_nodes(), self._graph.number_of_edges())
+        self._graph: nx.DiGraph = (
+            self.load() if self._path.exists() else nx.DiGraph()
+        )
+        logger.info(
+            "KnowledgeGraph ready ({} nodes, {} edges)",
+            self._graph.number_of_nodes(),
+            self._graph.number_of_edges(),
+        )
 
     def _add_node(self, node_id: str, **attrs) -> None:
         if not self._graph.has_node(node_id):
@@ -32,50 +56,123 @@ class KnowledgeGraph:
         """Build graph nodes and edges from a single extraction."""
         iid = extraction.incident_id
 
-        self._add_node(iid, type="Incident", title=extraction.title,
-                        severity=extraction.severity, date=extraction.date)
+        self._add_node(
+            iid,
+            type="Incident",
+            title=extraction.title,
+            severity=extraction.severity,
+            date=extraction.date,
+        )
 
         rc_id = f"rc:{_norm(extraction.root_cause.category)}"
-        self._add_node(rc_id, type="RootCause", category=extraction.root_cause.category,
-                        description=extraction.root_cause.description)
-        self._graph.add_edge(iid, rc_id, type="CAUSED_BY",
-                              confidence=1.0)
+        self._add_node(
+            rc_id,
+            type="RootCause",
+            category=extraction.root_cause.category,
+            description=extraction.root_cause.description,
+        )
+        self._graph.add_edge(
+            iid,
+            rc_id,
+            type="CAUSED_BY",
+            confidence=1.0,
+        )
 
         res_id = f"res:{iid}"
-        self._add_node(res_id, type="Resolution", description=extraction.resolution.description,
-                        resolution_type=extraction.resolution.type)
-        self._graph.add_edge(iid, res_id, type="RESOLVED_WITH",
-                              time_to_resolve=extraction.resolution.time_to_resolve)
+        self._add_node(
+            res_id,
+            type="Resolution",
+            description=extraction.resolution.description,
+            resolution_type=extraction.resolution.type,
+        )
+        self._graph.add_edge(
+            iid,
+            res_id,
+            type="RESOLVED_WITH",
+            time_to_resolve=extraction.resolution.time_to_resolve,
+        )
 
         for svc in extraction.affected_services:
-            svc_id = f"svc:{_norm(svc.name)}"
-            self._add_node(svc_id, type="Service", name=_norm(svc.name))
-            self._graph.add_edge(svc_id, iid, type="AFFECTED_BY", role=svc.role)
+            canonical_service = _norm_service(svc.name)
+            svc_id = f"svc:{canonical_service}"
+
+            self._add_node(
+                svc_id,
+                type="Service",
+                name=canonical_service,
+            )
+
+            self._graph.add_edge(
+                svc_id,
+                iid,
+                type="AFFECTED_BY",
+                role=svc.role,
+            )
 
         for i, step in enumerate(extraction.failure_chain):
             fm_id = f"fm:{iid}:{i}"
-            self._add_node(fm_id, type="FailureMode", description=step, step=i)
-            self._graph.add_edge(iid, fm_id, type="EXHIBITED")
+            self._add_node(
+                fm_id,
+                type="FailureMode",
+                description=step,
+                step=i,
+            )
+            self._graph.add_edge(
+                iid,
+                fm_id,
+                type="EXHIBITED",
+            )
 
         for dep in extraction.service_dependencies:
-            from_id = f"svc:{_norm(dep.from_service)}"
-            to_id = f"svc:{_norm(dep.to_service)}"
-            self._add_node(from_id, type="Service", name=_norm(dep.from_service))
-            self._add_node(to_id, type="Service", name=_norm(dep.to_service))
-            self._graph.add_edge(from_id, to_id, type="DEPENDS_ON",
-                                  dependency_type=dep.type)
+            from_service = _norm_service(dep.from_service)
+            to_service = _norm_service(dep.to_service)
 
-            if any(s.name.strip().lower() == _norm(dep.from_service) for s in extraction.affected_services) and \
-               any(s.name.strip().lower() == _norm(dep.to_service) for s in extraction.affected_services):
-                self._graph.add_edge(from_id, to_id, type="CASCADED_TO",
-                                      via_incident=iid)
+            from_id = f"svc:{from_service}"
+            to_id = f"svc:{to_service}"
+
+            self._add_node(
+                from_id,
+                type="Service",
+                name=from_service,
+            )
+            self._add_node(
+                to_id,
+                type="Service",
+                name=to_service,
+            )
+
+            self._graph.add_edge(
+                from_id,
+                to_id,
+                type="DEPENDS_ON",
+                dependency_type=dep.type,
+            )
+
+            if any(
+                _norm_service(s.name) == from_service
+                for s in extraction.affected_services
+            ) and any(
+                _norm_service(s.name) == to_service
+                for s in extraction.affected_services
+            ):
+                self._graph.add_edge(
+                    from_id,
+                    to_id,
+                    type="CASCADED_TO",
+                    via_incident=iid,
+                )
 
         self.save()
         logger.info("Added incident {} to graph", iid)
 
-    def get_service_dependencies(self, service_name: str, max_hops: int = 2) -> dict:
+    def get_service_dependencies(
+        self,
+        service_name: str,
+        max_hops: int = 2,
+    ) -> dict:
         """BFS for upstream and downstream dependencies of a service."""
-        svc_id = f"svc:{_norm(service_name)}"
+        svc_id = f"svc:{_norm_service(service_name)}"
+
         if not self._graph.has_node(svc_id):
             return {"upstream": [], "downstream": []}
 
@@ -83,21 +180,46 @@ class KnowledgeGraph:
             visited = set()
             queue = deque([(start, 0)])
             result = []
+
             while queue:
                 node, depth = queue.popleft()
+
                 if depth > max_hops:
                     continue
-                if node != start and self._graph.nodes[node].get("type") == "Service":
-                    result.append(self._graph.nodes[node].get("name", node))
+
+                if (
+                    node != start
+                    and self._graph.nodes[node].get("type") == "Service"
+                ):
+                    result.append(
+                        self._graph.nodes[node].get("name", node)
+                    )
+
                 visited.add(node)
-                neighbors = (self._graph.predecessors(node) if direction == "upstream"
-                             else self._graph.successors(node))
+
+                neighbors = (
+                    self._graph.predecessors(node)
+                    if direction == "upstream"
+                    else self._graph.successors(node)
+                )
+
                 for nb in neighbors:
-                    if nb not in visited:
-                        edge = self._graph.edges.get((nb, node) if direction == "upstream"
-                                                      else (node, nb), {})
-                        if edge.get("type") in ("DEPENDS_ON", "CASCADED_TO"):
-                            queue.append((nb, depth + 1))
+                    if nb in visited:
+                        continue
+
+                    edge = self._graph.edges.get(
+                        (nb, node)
+                        if direction == "upstream"
+                        else (node, nb),
+                        {},
+                    )
+
+                    if edge.get("type") in (
+                        "DEPENDS_ON",
+                        "CASCADED_TO",
+                    ):
+                        queue.append((nb, depth + 1))
+
             return result
 
         return {
@@ -105,26 +227,63 @@ class KnowledgeGraph:
             "downstream": _bfs(svc_id, "downstream"),
         }
 
-    def get_blast_radius(self, service_name: str) -> list[str]:
-        """All downstream reachable services from a given service."""
-        svc_id = f"svc:{_norm(service_name)}"
+    def get_blast_radius(
+        self,
+        service_name: str,
+        max_hops: int = 2,
+    ) -> list[str]:
+        """Find services that depend on the given service, directly or transitively."""
+        svc_id = f"svc:{_norm_service(service_name)}"
+
         if not self._graph.has_node(svc_id):
             return []
-        reachable = []
-        for node in nx.descendants(self._graph, svc_id):
-            if self._graph.nodes[node].get("type") == "Service" and node != svc_id:
-                reachable.append(self._graph.nodes[node].get("name", node))
+
+        reachable: list[str] = []
+        visited = {svc_id}
+        queue = deque([(svc_id, 0)])
+
+        while queue:
+            node, depth = queue.popleft()
+
+            if depth >= max_hops:
+                continue
+
+            # Dependency edges point from dependent -> dependency.
+            # Therefore, predecessors are services affected when this service fails.
+            for nb in self._graph.predecessors(node):
+                if nb in visited:
+                    continue
+
+                edge = self._graph.edges.get((nb, node), {})
+
+                if edge.get("type") not in (
+                    "DEPENDS_ON",
+                    "CASCADED_TO",
+                ):
+                    continue
+
+                visited.add(nb)
+
+                if self._graph.nodes[nb].get("type") == "Service":
+                    name = self._graph.nodes[nb].get("name", nb)
+                    reachable.append(name)
+                    queue.append((nb, depth + 1))
+
         return reachable
 
     def get_incidents_for_service(self, service_name: str) -> list[str]:
         """Return incident IDs linked to a service."""
-        svc_id = f"svc:{_norm(service_name)}"
+        svc_id = f"svc:{_norm_service(service_name)}"
+
         if not self._graph.has_node(svc_id):
             return []
+
         incidents = []
+
         for neighbor in self._graph.successors(svc_id):
             if self._graph.nodes[neighbor].get("type") == "Incident":
                 incidents.append(neighbor)
+
         return incidents
 
     def get_similar_incidents(self, incident_id: str) -> list[dict]:
@@ -134,50 +293,74 @@ class KnowledgeGraph:
 
         my_services = set()
         my_rc = None
+
         for nb in self._graph.predecessors(incident_id):
             if self._graph.nodes[nb].get("type") == "Service":
                 my_services.add(nb)
+
         for nb in self._graph.successors(incident_id):
             if self._graph.nodes[nb].get("type") == "RootCause":
                 my_rc = nb
 
         similar = []
+
         for node, attrs in self._graph.nodes(data=True):
             if attrs.get("type") != "Incident" or node == incident_id:
                 continue
+
             shared_svcs = set()
             same_rc = False
+
             for nb in self._graph.predecessors(node):
                 if nb in my_services:
-                    shared_svcs.add(self._graph.nodes[nb].get("name", nb))
+                    shared_svcs.add(
+                        self._graph.nodes[nb].get("name", nb)
+                    )
+
             if my_rc:
                 for nb in self._graph.successors(node):
                     if nb == my_rc:
                         same_rc = True
+
             if shared_svcs or same_rc:
-                similar.append({
-                    "incident_id": node,
-                    "title": attrs.get("title", ""),
-                    "shared_services": list(shared_svcs),
-                    "same_root_cause": same_rc,
-                })
+                similar.append(
+                    {
+                        "incident_id": node,
+                        "title": attrs.get("title", ""),
+                        "shared_services": list(shared_svcs),
+                        "same_root_cause": same_rc,
+                    }
+                )
+
         return similar
 
     def get_stats(self) -> dict:
         """Node counts by type, edge counts by type, top 5 most connected services."""
         node_types: Counter = Counter()
+
         for _, attrs in self._graph.nodes(data=True):
             node_types[attrs.get("type", "unknown")] += 1
 
         edge_types: Counter = Counter()
+
         for _, _, attrs in self._graph.edges(data=True):
             edge_types[attrs.get("type", "unknown")] += 1
 
         service_degrees = []
+
         for node, attrs in self._graph.nodes(data=True):
             if attrs.get("type") == "Service":
-                service_degrees.append((attrs.get("name", node), self._graph.degree(node)))
-        service_degrees.sort(key=lambda x: x[1], reverse=True)
+                service_degrees.append(
+                    (
+                        attrs.get("name", node),
+                        self._graph.degree(node),
+                    )
+                )
+
+        service_degrees.sort(
+            key=lambda x: x[1],
+            reverse=True,
+        )
 
         return {
             "total_nodes": self._graph.number_of_nodes(),
@@ -198,20 +381,44 @@ class KnowledgeGraph:
     def save(self) -> None:
         """Persist graph to JSON."""
         self._path.parent.mkdir(parents=True, exist_ok=True)
+
         data = nx.node_link_data(self._graph)
-        self._path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        logger.debug("Graph saved to {}", self._path)
+
+        self._path.write_text(
+            json.dumps(data, indent=2),
+            encoding="utf-8",
+        )
+
+        logger.debug(
+            "Graph saved to {}",
+            self._path,
+        )
 
     def load(self) -> nx.DiGraph:
-        """Load graph from JSON file."""
-        data = json.loads(self._path.read_text(encoding="utf-8"))
-        graph = nx.node_link_graph(data, directed=True)
-        logger.debug("Graph loaded from {}", self._path)
+        """Load graph from JSON."""
+        data = json.loads(
+            self._path.read_text(
+                encoding="utf-8",
+            )
+        )
+
+        graph = nx.node_link_graph(
+            data,
+            directed=True,
+        )
+
+        logger.debug(
+            "Graph loaded from {}",
+            self._path,
+        )
+
         return graph
 
     def reset(self) -> None:
         """Clear the graph and delete the persistence file."""
         self._graph = nx.DiGraph()
+
         if self._path.exists():
             self._path.unlink()
+
         logger.info("KnowledgeGraph reset")

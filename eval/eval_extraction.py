@@ -37,8 +37,14 @@ def score_incident(inc: dict) -> dict:
         scores["failure_chain"] = 0
 
     try:
-        deps = json.loads(inc.get("service_dependencies_json", "[]"))
-        scores["service_dependencies"] = 1 if len(deps) > 0 else 0
+        raw_deps = inc.get("service_dependencies_json")
+
+        if raw_deps is None:
+            scores["service_dependencies"] = 0
+        else:
+            deps = json.loads(raw_deps)
+            scores["service_dependencies"] = 1 if isinstance(deps, list) else 0
+
     except (json.JSONDecodeError, TypeError):
         scores["service_dependencies"] = 0
 

@@ -58,10 +58,29 @@ class HybridRetriever:
         seen_incidents: set[str] = set()
         context_parts: list[str] = []
 
+        incident_chunks: dict[str, list[dict]] = {}
+
         for vr in vector_results:
-            iid = vr["metadata"].get("incident_id", "")
+            metadata = vr.get("metadata", {})
+            iid = metadata.get("incident_id", "") or "unknown"
             seen_incidents.add(iid)
-            context_parts.append(vr["text"])
+            incident_chunks.setdefault(iid, []).append(vr)
+
+        for iid, chunks in incident_chunks.items():
+            source_file = chunks[0].get("metadata", {}).get("source_file", "unknown")
+
+            chunk_text = "\n\n".join(
+                chunk.get("text", "") for chunk in chunks
+            )
+
+            context_parts.append(
+                f"[INCIDENT EVIDENCE]\n"
+                f"Incident ID: {iid}\n"
+                f"Source file: {source_file}\n"
+                f"Important: all evidence below belongs to this SAME incident record.\n\n"
+                f"{chunk_text}"
+            )
+
 
         if isinstance(graph_results, dict):
             if "related_incidents" in graph_results:

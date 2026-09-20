@@ -13,9 +13,8 @@ def main():
     console = Console()
 
     try:
-        from src.retrieval.hybrid_retriever import HybridRetriever
         from src.retrieval.generator import AnswerGenerator
-        from src.retrieval.intent_classifier import classify_intent
+        from src.retrieval.hybrid_retriever import HybridRetriever
     except ImportError as exc:
         console.print(f"[red]Retrieval modules not yet available: {exc}[/red]")
         console.print("[dim]Build the retrieval layer first.[/dim]")
@@ -43,11 +42,10 @@ def main():
             if query.lower() in ("quit", "exit"):
                 break
 
-            intent = classify_intent(query)
-            console.print(f"[dim]Intent: {intent}[/dim]")
+            results = retriever.retrieve(query)
+            console.print(f"[dim]Intent: {results['intent']}[/dim]")
 
-            results = retriever.retrieve(query, intent=intent)
-            answer = generator.generate(query, results, intent=intent)
+            answer = generator.generate(query, results)
 
             console.print(Panel(answer.answer, title="Answer", border_style="green"))
 

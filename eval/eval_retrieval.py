@@ -60,18 +60,28 @@ def main():
             intent_score = 1 if intent_correct else 0
 
             services_found = [s.lower() for s in context.get("services_found", [])]
-            services_correct = all(
-                any(es.lower() in sf for sf in services_found)
-                for es in expected_services
-            ) if expected_services else True
-            services_score = 1 if services_correct else 0
+
+            if expected_services:
+                services_correct = all(
+                    any(es.lower() in sf for sf in services_found)
+                    for es in expected_services
+                )
+                services_score = 1 if services_correct else 0
+            else:
+                services_correct = None
+                services_score = 0
 
             answer_text = answer.answer.lower()
-            keywords_found = all(
-                kw.lower() in answer_text
-                for kw in expected_keywords
-            ) if expected_keywords else True
-            keywords_score = 1 if keywords_found else 0
+
+            if expected_keywords:
+                keywords_found = all(
+                    kw.lower() in answer_text
+                    for kw in expected_keywords
+                )
+                keywords_score = 1 if keywords_found else 0
+            else:
+                keywords_found = None
+                keywords_score = 0
 
             max_points = 1 + (1 if expected_services else 0) + (1 if expected_keywords else 0)
             points = intent_score + services_score + keywords_score
